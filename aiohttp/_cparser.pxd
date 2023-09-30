@@ -154,3 +154,5 @@ cdef extern from "../vendor/llhttp/build/llhttp.h":
     const char* llhttp_method_name(llhttp_method_t method)
 
     void llhttp_set_lenient_headers(llhttp_t* parser, int enabled)
+
+    uint8_t llhttp_get_upgrade(llhttp_t* parser)

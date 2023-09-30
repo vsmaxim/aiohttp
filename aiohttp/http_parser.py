@@ -446,7 +446,7 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
         headers, raw_headers = self._headers_parser.parse_headers(lines)
         close_conn = None
         encoding = None
-        upgrade = False
+        upgrade_to_websocket = False
         chunked = False
 
         # keep-alive
@@ -458,7 +458,15 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
             elif v == "keep-alive":
                 close_conn = False
             elif v == "upgrade":
-                upgrade = True
+                upgrade = headers.get(hdrs.UPGRADE)
+                if upgrade:
+                    uv = upgrade.lower()
+                    if uv == "websocket":
+                        upgrade_to_websocket = True
+                else:
+                    raise InvalidHeader(
+                        "Upgrade header must be present when Connection is set to `upgrade`"
+                    )
 
         # encoding
         enc = headers.get(hdrs.CONTENT_ENCODING)
@@ -480,7 +488,14 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
                     "Content-Length can't be present with Transfer-Encoding",
                 )
 
-        return (headers, raw_headers, close_conn, encoding, upgrade, chunked)
+        return (
+            headers,
+            raw_headers,
+            close_conn,
+            encoding,
+            upgrade_to_websocket,
+            chunked,
+        )
 
     def set_upgraded(self, val: bool) -> None:
         """Set connection upgraded (to websocket) mode.

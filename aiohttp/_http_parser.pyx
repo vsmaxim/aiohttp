@@ -67,6 +67,8 @@ cdef object HttpVersion10 = _HttpVersion10
 cdef object HttpVersion11 = _HttpVersion11
 cdef object SEC_WEBSOCKET_KEY1 = hdrs.SEC_WEBSOCKET_KEY1
 cdef object CONTENT_ENCODING = hdrs.CONTENT_ENCODING
+cdef object UPGRADE = hdrs.UPGRADE
+cdef object CONNECTION = hdrs.CONNECTION
 cdef object EMPTY_PAYLOAD = _EMPTY_PAYLOAD
 cdef object StreamReader = _StreamReader
 cdef object DeflateBuffer = _DeflateBuffer
@@ -420,13 +422,27 @@ cdef class HttpParser:
 
         method = http_method_str(self._cparser.method)
         should_close = not cparser.llhttp_should_keep_alive(self._cparser)
-        upgrade = self._cparser.upgrade
         chunked = self._cparser.flags & cparser.F_CHUNKED
 
         raw_headers = tuple(self._raw_headers)
         headers = CIMultiDictProxy(self._headers)
 
-        if upgrade or self._cparser.method == cparser.HTTP_CONNECT:
+        upgrade = False
+        is_connect_meth = self._cparser.method == cparser.HTTP_CONNECT
+
+        # This is not in the llhttp documentation, but:
+        # llhttp_get_upgrade returns 1 when header status-line method is "CONNECT"
+        # even when the "Connection" header is unset.
+        # https://github.com/nodejs/llhttp#uint8_t-llhttp_get_methodllhttp_t-parser
+        if cparser.llhttp_get_upgrade(self._cparser) and not is_connect_meth:
+            upgrade_to = headers.get(UPGRADE)
+            if upgrade_to:
+                if upgrade_to.lower() == "websocket":
+                    upgrade = True
+            else:
+                raise InvalidHeader("`Upgrade` header is required")
+
+        if upgrade or is_connect_meth:
             self._upgraded = True
 
         # do not support old websocket spec
@@ -748,7 +764,7 @@ cdef int cb_on_headers_complete(cparser.llhttp_t* parser) except -1:
         return -1
     else:
         if (
-            pyparser._cparser.upgrade or
+            pyparser._upgraded or
             pyparser._cparser.method == cparser.HTTP_CONNECT
         ):
             return 2
