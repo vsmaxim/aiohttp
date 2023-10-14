@@ -182,15 +182,16 @@ class WebSocketResponse(StreamResponse):
         self, request: BaseRequest
     ) -> Tuple["CIMultiDict[str]", str, bool, bool]:
         headers = request.headers
-        if "websocket" != headers.get(hdrs.UPGRADE, "").lower().strip():
+
+        if hdrs.WEBSOCKET_UPGRADE_PROTO_VAL not in request.upgrade_to:
             raise HTTPBadRequest(
                 text=(
                     "No WebSocket UPGRADE hdr: {}\n Can "
                     '"Upgrade" only to "WebSocket".'
-                ).format(headers.get(hdrs.UPGRADE))
+                ).format(request.upgrade_to)
             )
 
-        if "upgrade" not in headers.get(hdrs.CONNECTION, "").lower():
+        if not request.upgrade:
             raise HTTPBadRequest(
                 text="No CONNECTION upgrade hdr: {}".format(
                     headers.get(hdrs.CONNECTION)

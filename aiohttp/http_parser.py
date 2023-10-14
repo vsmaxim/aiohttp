@@ -71,6 +71,7 @@ class RawRequestMessage(NamedTuple):
     should_close: bool
     compression: Optional[str]
     upgrade: bool
+    upgrade_to: Set[str]
     chunked: bool
     url: URL
 
@@ -84,6 +85,7 @@ class RawResponseMessage(NamedTuple):
     should_close: bool
     compression: Optional[str]
     upgrade: bool
+    upgrade_to: Set[str]
     chunked: bool
 
 
@@ -263,6 +265,7 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
         CONTENT_LENGTH: istr = hdrs.CONTENT_LENGTH,
         METH_CONNECT: str = hdrs.METH_CONNECT,
         SEC_WEBSOCKET_KEY1: istr = hdrs.SEC_WEBSOCKET_KEY1,
+        WEBSOCKET_UPGRADE_PROTO_VAL: istr = hdrs.WEBSOCKET_UPGRADE_PROTO_VAL,
     ) -> Tuple[List[Tuple[_MsgT, StreamReader]], bool, bytes]:
         messages = []
 
@@ -312,11 +315,17 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
                             return length
 
                         length = get_content_length()
+
                         # do not support old websocket spec
                         if SEC_WEBSOCKET_KEY1 in msg.headers:
                             raise InvalidHeader(SEC_WEBSOCKET_KEY1)
 
-                        self._upgraded = msg.upgrade
+                        # Allow upgrade only to websocket
+                        # Read more: https://github.com/aio-libs/aiohttp/issues/6446
+                        self._upgraded = (
+                            msg.upgrade
+                            and WEBSOCKET_UPGRADE_PROTO_VAL in msg.upgrade_to
+                        )
 
                         method = getattr(msg, "method", self.method)
 
@@ -325,7 +334,7 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
                         if (
                             (length is not None and length > 0)
                             or msg.chunked
-                            and not msg.upgrade
+                            and not self._upgraded
                         ):
                             payload = StreamReader(
                                 self.protocol,
@@ -436,7 +445,13 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
     def parse_headers(
         self, lines: List[bytes]
     ) -> Tuple[
-        "CIMultiDictProxy[str]", RawHeaders, Optional[bool], Optional[str], bool, bool
+        "CIMultiDictProxy[str]",
+        RawHeaders,
+        Optional[bool],
+        Optional[str],
+        bool,
+        Set[str],
+        bool,
     ]:
         """Parses RFC 5322 headers from a stream.
 
@@ -446,7 +461,8 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
         headers, raw_headers = self._headers_parser.parse_headers(lines)
         close_conn = None
         encoding = None
-        upgrade_to_websocket = False
+        upgrade = False
+        upgrade_to: Set[str] = set()
         chunked = False
 
         # keep-alive
@@ -458,15 +474,14 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
             elif v == "keep-alive":
                 close_conn = False
             elif v == "upgrade":
-                upgrade = headers.get(hdrs.UPGRADE)
-                if upgrade:
-                    uv = upgrade.lower()
-                    if uv == "websocket":
-                        upgrade_to_websocket = True
-                else:
+                upgrade_hdr = headers.get(hdrs.UPGRADE, "")
+                if not upgrade_hdr:
                     raise InvalidHeader(
                         "Upgrade header must be present when Connection is set to `upgrade`"
                     )
+
+                upgrade = True
+                upgrade_to.update(v.strip() for v in upgrade_hdr.split(","))
 
         # encoding
         enc = headers.get(hdrs.CONTENT_ENCODING)
@@ -493,7 +508,8 @@ class HttpParser(abc.ABC, Generic[_MsgT]):
             raw_headers,
             close_conn,
             encoding,
-            upgrade_to_websocket,
+            upgrade,
+            upgrade_to,
             chunked,
         )
 
@@ -572,6 +588,7 @@ class HttpRequestParser(HttpParser[RawRequestMessage]):
             close,
             compression,
             upgrade,
+            upgrade_to,
             chunked,
         ) = self.parse_headers(lines)
 
@@ -590,6 +607,7 @@ class HttpRequestParser(HttpParser[RawRequestMessage]):
             close,
             compression,
             upgrade,
+            upgrade_to,
             chunked,
             url,
         )

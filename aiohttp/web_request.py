@@ -130,6 +130,8 @@ class BaseRequest(MutableMapping[str, Any], HeadersMixin):
         "_headers",
         "_method",
         "_version",
+        "_upgrade",
+        "_upgrade_to",
         "_rel_url",
         "_post",
         "_read_bytes",
@@ -170,6 +172,9 @@ class BaseRequest(MutableMapping[str, Any], HeadersMixin):
         self._headers = message.headers
         self._method = message.method
         self._version = message.version
+        self._upgrade = message.upgrade
+        self._upgrade_to = message.upgrade_to
+
         self._cache: Dict[str, Any] = {}
         url = message.url
         if url.is_absolute():
@@ -483,6 +488,14 @@ class BaseRequest(MutableMapping[str, Any], HeadersMixin):
     def headers(self) -> "CIMultiDictProxy[str]":
         """A case-insensitive multidict proxy with all headers."""
         return self._headers
+
+    @reify
+    def upgrade_to(self) -> Set[str]:
+        return self._upgrade_to
+
+    @reify
+    def upgrade(self) -> bool:
+        return self._upgrade
 
     @reify
     def raw_headers(self) -> RawHeaders:

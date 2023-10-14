@@ -119,11 +119,12 @@ cdef class RawRequestMessage:
     cdef readonly object should_close
     cdef readonly object compression
     cdef readonly object upgrade
+    cdef readonly object upgrade_to # set
     cdef readonly object chunked
     cdef readonly object url  # yarl.URL
 
     def __init__(self, method, path, version, headers, raw_headers,
-                 should_close, compression, upgrade, chunked, url):
+                 should_close, compression, upgrade, upgrade_to, chunked, url):
         self.method = method
         self.path = path
         self.version = version
@@ -132,6 +133,7 @@ cdef class RawRequestMessage:
         self.should_close = should_close
         self.compression = compression
         self.upgrade = upgrade
+        self.upgrade_to = upgrade_to
         self.chunked = chunked
         self.url = url
 
@@ -145,6 +147,7 @@ cdef class RawRequestMessage:
         info.append(("should_close", self.should_close))
         info.append(("compression", self.compression))
         info.append(("upgrade", self.upgrade))
+        info.append(("upgrade_to", self.upgrade_to))
         info.append(("chunked", self.chunked))
         info.append(("url", self.url))
         sinfo = ', '.join(name + '=' + repr(val) for name, val in info)
@@ -160,6 +163,7 @@ cdef class RawRequestMessage:
                                    self.should_close,
                                    self.compression,
                                    self.upgrade,
+                                   self.upgrade_to,
                                    self.chunked,
                                    self.url)
         if "method" in dct:
@@ -178,6 +182,8 @@ cdef class RawRequestMessage:
             ret.compression = dct["compression"]
         if "upgrade" in dct:
             ret.upgrade = dct["upgrade"]
+        if "upgrade_to" in dct:
+            ret.upgrade_to = dct["upgrade_to"]
         if "chunked" in dct:
             ret.chunked = dct["chunked"]
         if "url" in dct:
@@ -192,6 +198,7 @@ cdef _new_request_message(str method,
                            bint should_close,
                            object compression,
                            bint upgrade,
+                           object upgrade_to,
                            bint chunked,
                            object url):
     cdef RawRequestMessage ret
@@ -204,6 +211,7 @@ cdef _new_request_message(str method,
     ret.should_close = should_close
     ret.compression = compression
     ret.upgrade = upgrade
+    ret.upgrade_to = upgrade_to
     ret.chunked = chunked
     ret.url = url
     return ret
@@ -219,10 +227,11 @@ cdef class RawResponseMessage:
     cdef readonly object should_close
     cdef readonly object compression
     cdef readonly object upgrade
+    cdef readonly object upgrade_to # set
     cdef readonly object chunked
 
     def __init__(self, version, code, reason, headers, raw_headers,
-                 should_close, compression, upgrade, chunked):
+                 should_close, compression, upgrade, upgrade_to, chunked):
         self.version = version
         self.code = code
         self.reason = reason
@@ -231,6 +240,7 @@ cdef class RawResponseMessage:
         self.should_close = should_close
         self.compression = compression
         self.upgrade = upgrade
+        self.upgrade_to = upgrade_to
         self.chunked = chunked
 
     def __repr__(self):
@@ -243,6 +253,7 @@ cdef class RawResponseMessage:
         info.append(("should_close", self.should_close))
         info.append(("compression", self.compression))
         info.append(("upgrade", self.upgrade))
+        info.append(("upgrade to", self.upgrade_to))
         info.append(("chunked", self.chunked))
         sinfo = ', '.join(name + '=' + repr(val) for name, val in info)
         return '<RawResponseMessage(' + sinfo + ')>'
@@ -256,6 +267,7 @@ cdef _new_response_message(object version,
                            bint should_close,
                            object compression,
                            bint upgrade,
+                           object upgrade_to,
                            bint chunked):
     cdef RawResponseMessage ret
     ret = RawResponseMessage.__new__(RawResponseMessage)
@@ -267,6 +279,7 @@ cdef _new_response_message(object version,
     ret.should_close = should_close
     ret.compression = compression
     ret.upgrade = upgrade
+    ret.upgrade_to = upgrade_to
     ret.chunked = chunked
     return ret
 
@@ -428,6 +441,8 @@ cdef class HttpParser:
         headers = CIMultiDictProxy(self._headers)
 
         upgrade = False
+        upgrade_to = set()
+
         is_connect_meth = self._cparser.method == cparser.HTTP_CONNECT
 
         # This is not in the llhttp documentation, but:
@@ -435,14 +450,14 @@ cdef class HttpParser:
         # even when the "Connection" header is unset.
         # https://github.com/nodejs/llhttp#uint8_t-llhttp_get_methodllhttp_t-parser
         if cparser.llhttp_get_upgrade(self._cparser) and not is_connect_meth:
-            upgrade_to = headers.get(UPGRADE)
-            if upgrade_to:
-                if upgrade_to.lower() == "websocket":
-                    upgrade = True
-            else:
-                raise InvalidHeader("`Upgrade` header is required")
+            upgrade_hdr = headers.get(UPGRADE)
+            if upgrade_hdr is None:
+                raise InvalidHeader("`Upgrade` header is required, when Connection is set to `Upgrade`")
 
-        if upgrade or is_connect_meth:
+            upgrade = True
+            upgrade_to.update(v.strip() for v in upgrade_hdr.split(","))
+
+        if is_connect_meth or (upgrade and hdrs.WEBSOCKET_UPGRADE_PROTO_VAL in upgrade_to):
             self._upgraded = True
 
         # do not support old websocket spec
@@ -461,12 +476,13 @@ cdef class HttpParser:
             msg = _new_request_message(
                 method, self._path,
                 self.http_version(), headers, raw_headers,
-                should_close, encoding, upgrade, chunked, self._url)
+                should_close, encoding, upgrade, upgrade_to,
+                chunked, self._url)
         else:
             msg = _new_response_message(
                 self.http_version(), self._cparser.status_code, self._reason,
                 headers, raw_headers, should_close, encoding,
-                upgrade, chunked)
+                upgrade, upgrade_to, chunked)
 
         if (
             ULLONG_MAX > self._cparser.content_length > 0 or chunked or
@@ -763,10 +779,7 @@ cdef int cb_on_headers_complete(cparser.llhttp_t* parser) except -1:
         pyparser._last_error = exc
         return -1
     else:
-        if (
-            pyparser._upgraded or
-            pyparser._cparser.method == cparser.HTTP_CONNECT
-        ):
+        if pyparser._upgraded:
             return 2
         else:
             return 0
